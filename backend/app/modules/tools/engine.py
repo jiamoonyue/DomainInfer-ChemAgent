@@ -1,9 +1,19 @@
-"""Chemical engineering tool implementations — ported from DomainInfer ChemAgent."""
+"""Chemical engineering tool implementations + External API tools.
 
+Design doc 5.4: 6 local calculation tools + 4 external API tools.
+"""
+
+import hashlib
+import html
 import json
 import math
 import re
+import ssl
+import time
+import urllib.parse
+import urllib.request
 from typing import Any
+
 
 # ============================================================
 # Periodic Table / Atomic Weights
@@ -29,7 +39,6 @@ ATOMIC_WEIGHTS = {
     "Rn": 222.0, "Fr": 223.0, "Ra": 226.0, "Ac": 227.0, "Th": 232.04,
     "Pa": 231.04, "U": 238.03, "Np": 237.0, "Pu": 244.0, "Am": 243.0,
 }
-
 POLYATOMIC_MASSES = {
     "OH": 17.007, "NO3": 62.005, "SO4": 96.06, "CO3": 60.009,
     "PO4": 94.971, "NH4": 18.039, "MnO4": 118.936, "CrO4": 115.994,
@@ -38,7 +47,6 @@ POLYATOMIC_MASSES = {
 
 
 def _parse_formula(formula: str) -> list[tuple[str, int]]:
-    """Parse a chemical formula into list of (element, count)."""
     while "(" in formula:
         formula = re.sub(
             r"\(([^()]+)\)(\d*)",
@@ -53,11 +61,25 @@ def _parse_formula(formula: str) -> list[tuple[str, int]]:
 
 
 # ============================================================
-# Tool Implementations
+# HTTP Client for external APIs (zero deps)
+# ============================================================
+def _http_get(url: str, timeout: int = 15) -> dict | None:
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "AgentForge/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as resp:
+                return json.loads(resp.read().decode())
+        except Exception:
+            if attempt == 2:
+                return None
+            time.sleep(1)
+
+
+# ============================================================
+# Local Calculation Tools
 # ============================================================
 
 def calculate_molecular_weight(formula: str) -> str:
-    """Calculate molecular weight of a chemical formula."""
     try:
         parts = _parse_formula(formula)
         total = 0.0
@@ -82,7 +104,6 @@ def calculate_molecular_weight(formula: str) -> str:
 
 
 def balance_equation(reactants: str, products: str) -> str:
-    """Balance a chemical equation."""
     try:
         r_species = [s.strip() for s in reactants.split("+")]
         p_species = [s.strip() for s in products.split("+")]
@@ -96,14 +117,12 @@ def balance_equation(reactants: str, products: str) -> str:
                 comp[elem] = comp.get(elem, 0) + cnt
                 all_elements.add(elem)
             compositions.append(comp)
-
         elements = sorted(all_elements)
         n_reactants = len(r_species)
         n_vars = len(all_species)
 
         from itertools import product
         for coeffs in product(range(1, 21), repeat=n_vars - 1):
-            # Build matrix row check
             ok = True
             last_val = None
             for elem in elements:
@@ -117,76 +136,57 @@ def balance_equation(reactants: str, products: str) -> str:
                 last_comp = compositions[-1].get(elem, 0)
                 if last_comp == 0:
                     if s != 0:
-                        ok = False
-                        break
+                        ok = False; break
                 else:
                     if s % last_comp != 0:
-                        ok = False
-                        break
+                        ok = False; break
                     lc = -s // last_comp
                     if lc <= 0:
-                        ok = False
-                        break
+                        ok = False; break
                     if last_val is None:
                         last_val = lc
                     elif lc != last_val:
-                        ok = False
-                        break
+                        ok = False; break
             if not ok:
                 continue
-
             final = list(coeffs) + [last_val]
             g = final[0]
             for x in final[1:]:
                 g = math.gcd(g, x)
             final = [x // g for x in final]
-
             parts_l = []
             for i, sp in enumerate(r_species):
-                c = final[i]
-                parts_l.append(f"{c if c > 1 else ''}{sp}")
+                c = final[i]; parts_l.append(f"{c if c > 1 else ''}{sp}")
             left = " + ".join(parts_l)
             parts_r = []
             for i, sp in enumerate(p_species):
-                c = final[n_reactants + i]
-                parts_r.append(f"{c if c > 1 else ''}{sp}")
+                c = final[n_reactants + i]; parts_r.append(f"{c if c > 1 else ''}{sp}")
             right = " + ".join(parts_r)
             return f"**Balanced:**\n{left} -> {right}\nCoefficients: {final[:n_reactants]} -> {final[n_reactants:]}"
-
         return "WARNING: No solution found in range 1-20"
     except Exception as e:
         return f"ERROR: {e}"
 
 
-# Unit conversion tables
 _TEMP_CONV = {
-    ("C", "F"): lambda v: v * 9/5 + 32,
-    ("C", "K"): lambda v: v + 273.15,
-    ("F", "C"): lambda v: (v - 32) * 5/9,
-    ("F", "K"): lambda v: (v - 32) * 5/9 + 273.15,
-    ("K", "C"): lambda v: v - 273.15,
-    ("K", "F"): lambda v: (v - 273.15) * 9/5 + 32,
+    ("C", "F"): lambda v: v * 9/5 + 32, ("C", "K"): lambda v: v + 273.15,
+    ("F", "C"): lambda v: (v - 32) * 5/9, ("F", "K"): lambda v: (v - 32) * 5/9 + 273.15,
+    ("K", "C"): lambda v: v - 273.15, ("K", "F"): lambda v: (v - 273.15) * 9/5 + 32,
 }
-
-_PRESSURE_TO_PA = {
-    "Pa": 1, "kPa": 1000, "MPa": 1e6, "atm": 101325,
-    "bar": 1e5, "psi": 6894.76, "mmHg": 133.322, "torr": 133.322,
-}
-
+_PRESSURE_TO_PA = {"Pa": 1, "kPa": 1000, "MPa": 1e6, "atm": 101325, "bar": 1e5, "psi": 6894.76, "mmHg": 133.322, "torr": 133.322}
 _MASS_TO_KG = {"kg": 1, "g": 0.001, "mg": 1e-6, "t": 1000, "ton": 1000, "lb": 0.453592, "oz": 0.0283495}
 _VOLUME_TO_L = {"L": 1, "mL": 0.001, "m3": 1000, "cm3": 0.001, "gal": 3.78541, "qt": 0.946353, "pt": 0.473176, "fl_oz": 0.0295735}
 _ENERGY_TO_J = {"J": 1, "kJ": 1000, "cal": 4.184, "kcal": 4184, "kWh": 3.6e6, "BTU": 1055.06}
 
 
 def convert_unit(value: float, from_unit: str, to_unit: str) -> str:
-    """Convert between engineering units."""
     fu, tu = from_unit.strip(), to_unit.strip()
     try:
         if (fu, tu) in _TEMP_CONV:
             result = _TEMP_CONV[(fu, tu)](value)
             return f"**{value} {fu} = {result:.4f} {tu}**"
         for table in [_PRESSURE_TO_PA, _MASS_TO_KG, _VOLUME_TO_L, _ENERGY_TO_J]:
-            f = table.get(fu); t = table.get(tu)
+            f, t = table.get(fu), table.get(tu)
             if f is not None and t is not None:
                 result = value * f / t
                 return f"**{value} {fu} = {result:.6g} {tu}**"
@@ -196,12 +196,10 @@ def convert_unit(value: float, from_unit: str, to_unit: str) -> str:
 
 
 def calculate_ideal_gas(P: float, V: float, n: float, T: float) -> str:
-    """PV=nRT calculation. Pass 0 for the unknown parameter."""
     R = 8.314
     unknowns = sum(1 for x in [P, V, n, T] if x <= 0)
     if unknowns != 1:
         return "ERROR: Exactly one unknown parameter required (value=0)"
-
     if P <= 0:
         P = n * R * T / V
         return f"**P = nRT/V = {P:.4f} Pa ({P/101325:.4f} atm)**"
@@ -217,21 +215,18 @@ def calculate_ideal_gas(P: float, V: float, n: float, T: float) -> str:
 
 
 def heat_exchanger_duty(mass_flow: float, cp: float, t_in: float, t_out: float) -> str:
-    """Q = m*Cp*deltaT."""
     dT = t_out - t_in
     Q = mass_flow * cp * dT
     direction = "Heating" if dT > 0 else "Cooling"
     return (
         f"**Heat Exchanger Duty:**\n"
-        f"Q = m.Cp.deltaT = {mass_flow} x {cp} x ({t_out} - {t_in})\n"
+        f"Q = m * Cp * deltaT = {mass_flow} x {cp} x ({t_out} - {t_in})\n"
         f"deltaT = {dT:.2f} K\n"
-        f"**Q = {Q:.2f} W ({Q/1000:.3f} kW)**\n"
-        f"({direction})"
+        f"**Q = {Q:.2f} W ({Q/1000:.3f} kW)** ({direction})"
     )
 
 
 def reynolds_number(density: float, velocity: float, diameter: float, viscosity: float) -> str:
-    """Re = rho*v*D/mu."""
     Re = density * velocity * diameter / viscosity
     if Re < 2300:
         regime = "Laminar"
@@ -241,37 +236,184 @@ def reynolds_number(density: float, velocity: float, diameter: float, viscosity:
         regime = "Turbulent"
     return (
         f"**Reynolds Number:**\n"
-        f"Re = rho.v.D/mu = {density} x {velocity} x {diameter} / {viscosity}\n"
-        f"**Re = {Re:.2f}**\n"
-        f"Flow regime: **{regime}**"
+        f"Re = rho * v * D / mu = {density} x {velocity} x {diameter} / {viscosity}\n"
+        f"**Re = {Re:.2f}**\nFlow regime: **{regime}**"
     )
 
 
-# Tool dispatch registry
+# ============================================================
+# External API Tools (Design doc 5.4)
+# ============================================================
+
+PUBCHEM_BASE = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
+PUBCHEM_PROPS = ["MolecularFormula", "MolecularWeight", "IUPACName", "XLogP"]
+
+
+def _pubchem_cid(name: str) -> int | None:
+    url = f"{PUBCHEM_BASE}/compound/name/{urllib.parse.quote(name)}/cids/JSON"
+    data = _http_get(url)
+    if data and "IdentifierList" in data:
+        cids = data["IdentifierList"].get("CID", [])
+        return cids[0] if cids else None
+    return None
+
+
+def pubchem_search(query: str) -> str:
+    """从 PubChem (NIH) 实时查询化合物的分子式、分子量、IUPAC名。"""
+    cid = _pubchem_cid(query)
+    if cid is None:
+        return f"[PubChem] Compound not found: {query}"
+
+    props_str = ",".join(PUBCHEM_PROPS)
+    url = f"{PUBCHEM_BASE}/compound/cid/{cid}/property/{props_str}/JSON"
+    data = _http_get(url)
+    if not data or "PropertyTable" not in data:
+        return f"[PubChem] Query failed (CID: {cid})"
+
+    props = data["PropertyTable"]["Properties"][0]
+
+    syn_url = f"{PUBCHEM_BASE}/compound/cid/{cid}/synonyms/JSON"
+    syn_data = _http_get(syn_url)
+    synonyms = []
+    if syn_data and "InformationList" in syn_data:
+        synonyms = syn_data["InformationList"]["Information"][0].get("Synonym", [])[:3]
+
+    lines = [f"## PubChem: {props.get('IUPACName', query)}"]
+    lines.append(f"CID: {cid}")
+    for label, key in [("Formula", "MolecularFormula"), ("Molecular Weight", "MolecularWeight"), ("XLogP", "XLogP")]:
+        val = props.get(key)
+        if val: lines.append(f"- {label}: {val}")
+    if synonyms:
+        lines.append(f"- Synonyms: {', '.join(synonyms)}")
+    lines.append("Source: PubChem (NIH/NLM)")
+    return "\n".join(lines)
+
+
+def pubchem_toxicity(compound_name: str) -> str:
+    """查询化合物的 GHS 危险分类和毒性数据。"""
+    cid = _pubchem_cid(compound_name)
+    if cid is None:
+        return f"[PubChem] Compound not found: {compound_name}"
+
+    url = f"{PUBCHEM_BASE}/compound/cid/{cid}/classification/JSON?classification_type=simple"
+    data = _http_get(url)
+    if not data:
+        return f"[PubChem] Could not fetch GHS data for {compound_name}"
+
+    classes = data.get("GHSClassification", [])
+    if not classes:
+        return f"[PubChem] No GHS classification available for {compound_name}"
+
+    lines = [f"## {compound_name} -- GHS Hazard Classification"]
+    for cls in classes:
+        code = cls.get("GHSClassificationCode", "")
+        name = cls.get("GHSClassificationName", "")
+        lines.append(f"- {code}: {name}")
+    lines.append("Source: PubChem GHS Classification")
+    return "\n".join(lines)
+
+
+NIST_BASE = "https://webbook.nist.gov/cgi/cbook.cgi"
+
+
+def nist_thermo(formula: str) -> str:
+    """从 NIST Chemistry WebBook 查询化合物的热力学数据。"""
+    url = f"{NIST_BASE}?Formula={urllib.parse.quote(formula)}&cTG=on&cTC=on&cTP=on&cTR=on&cTS=on&cTT=on"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "AgentForge"})
+        with urllib.request.urlopen(req, timeout=15, context=ssl.create_default_context()) as resp:
+            html_text = resp.read().decode()
+    except Exception:
+        return f"[NIST] Query timed out: {formula}"
+
+    name_match = re.search(r'<title>(.*?)</title>', html_text)
+    name = html.unescape(name_match.group(1)) if name_match else formula
+
+    has_gas = "Gas phase thermochemistry data" in html_text
+    has_condensed = "Condensed phase thermochemistry data" in html_text
+    has_ir = "IR Spectrum" in html_text
+
+    lines = [f"## NIST WebBook: {name}"]
+    available = []
+    if has_gas: available.append("Gas phase thermochemistry")
+    if has_condensed: available.append("Condensed phase thermochemistry")
+    if has_ir: available.append("IR Spectrum")
+    if available:
+        lines.append("Available data: " + ", ".join(available))
+    else:
+        lines.append("No thermodynamic data found for this compound")
+    lines.append(f"Details: {url}")
+    lines.append("Source: NIST Chemistry WebBook")
+    return "\n".join(lines)
+
+
+ARXIV_BASE = "http://export.arxiv.org/api/query"
+
+
+def arxiv_search(query: str, max_results: int = 3) -> str:
+    """从 ArXiv 检索最新的学术论文。"""
+    url = (
+        f"{ARXIV_BASE}?search_query=all:{urllib.parse.quote(query)}"
+        f"&start=0&max_results={max_results}&sortBy=submittedDate&sortOrder=descending"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "AgentForge"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            xml = resp.read().decode()
+    except Exception:
+        return f"[ArXiv] Query timed out: {query}"
+
+    entries = re.findall(r'<entry>(.*?)</entry>', xml, re.DOTALL)
+    if not entries:
+        return f"[ArXiv] No papers found for: {query}"
+
+    lines = [f"## ArXiv: Latest papers on '{query}'"]
+    for entry in entries[:max_results]:
+        title = re.search(r'<title>(.*?)</title>', entry)
+        published = re.search(r'<published>(\d{4}-\d{2}-\d{2})', entry)
+        arxiv_id = re.search(r'<id>.*?/([^/]+)</id>', entry)
+        if title:
+            t = html.unescape(title.group(1).strip().replace('\n', ' '))
+            pub = published.group(1) if published else "?"
+            aid = arxiv_id.group(1) if arxiv_id else "?"
+            lines.append(f"- [{pub}] {t} (arXiv:{aid})")
+    lines.append("Source: ArXiv")
+    return "\n".join(lines)
+
+
+# ============================================================
+# Tool Registry
+# ============================================================
+
 TOOL_FUNCTIONS: dict[str, Any] = {
+    # Local calculation
     "calculate_molecular_weight": calculate_molecular_weight,
     "balance_equation": balance_equation,
     "convert_unit": convert_unit,
     "calculate_ideal_gas": calculate_ideal_gas,
     "heat_exchanger_duty": heat_exchanger_duty,
     "reynolds_number": reynolds_number,
+    # External APIs
+    "pubchem_search": pubchem_search,
+    "pubchem_toxicity": pubchem_toxicity,
+    "nist_thermo": nist_thermo,
+    "arxiv_search": arxiv_search,
 }
 
-# Tool definitions (JSON Schema — used for LLM prompt and API docs)
 TOOL_DEFINITIONS = [
     {
         "name": "calculate_molecular_weight",
-        "description": "Calculate molecular weight / molar mass (g/mol) of a chemical formula. Supports parentheses e.g. Ca(OH)2, Al2(SO4)3.",
+        "description": "Calculate molecular weight / molar mass (g/mol). Supports parentheses, e.g. Ca(OH)2.",
         "tool_type": "local",
         "input_schema": {
             "type": "object",
-            "properties": {"formula": {"type": "string", "description": "Chemical formula, e.g. H2SO4, NaOH, Ca(OH)2"}},
+            "properties": {"formula": {"type": "string", "description": "Chemical formula, e.g. H2SO4, NaOH"}},
             "required": ["formula"],
         },
     },
     {
         "name": "balance_equation",
-        "description": "Balance a chemical equation and return coefficients.",
+        "description": "Balance a chemical equation, return coefficients.",
         "tool_type": "local",
         "input_schema": {
             "type": "object",
@@ -284,44 +426,40 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "convert_unit",
-        "description": "Convert engineering units. Temperature (C/F/K), Pressure (Pa/kPa/MPa/atm/bar/psi/mmHg), Mass, Volume, Energy.",
+        "description": "Convert engineering units: temperature (C/F/K), pressure, mass, volume, energy.",
         "tool_type": "local",
         "input_schema": {
             "type": "object",
             "properties": {
-                "value": {"type": "number", "description": "Value to convert"},
-                "from_unit": {"type": "string", "description": "Source unit"},
-                "to_unit": {"type": "string", "description": "Target unit"},
+                "value": {"type": "number"},
+                "from_unit": {"type": "string"},
+                "to_unit": {"type": "string"},
             },
             "required": ["value", "from_unit", "to_unit"],
         },
     },
     {
         "name": "calculate_ideal_gas",
-        "description": "Ideal gas law (PV=nRT). Provide 3 known values, set unknown to 0.",
+        "description": "Ideal gas law PV=nRT. Pass 0 for the unknown value.",
         "tool_type": "local",
         "input_schema": {
             "type": "object",
             "properties": {
-                "P": {"type": "number", "description": "Pressure (Pa), 0 if unknown"},
-                "V": {"type": "number", "description": "Volume (m3), 0 if unknown"},
-                "n": {"type": "number", "description": "Moles (mol), 0 if unknown"},
-                "T": {"type": "number", "description": "Temperature (K), 0 if unknown"},
+                "P": {"type": "number"}, "V": {"type": "number"},
+                "n": {"type": "number"}, "T": {"type": "number"},
             },
             "required": ["P", "V", "n", "T"],
         },
     },
     {
         "name": "heat_exchanger_duty",
-        "description": "Calculate heat exchanger duty Q = m*Cp*deltaT.",
+        "description": "Calculate heat exchanger duty Q = m * Cp * deltaT.",
         "tool_type": "local",
         "input_schema": {
             "type": "object",
             "properties": {
-                "mass_flow": {"type": "number", "description": "Mass flow (kg/s)"},
-                "cp": {"type": "number", "description": "Specific heat capacity (J/(kg*K))"},
-                "t_in": {"type": "number", "description": "Inlet temperature (K or C)"},
-                "t_out": {"type": "number", "description": "Outlet temperature (K or C)"},
+                "mass_flow": {"type": "number"}, "cp": {"type": "number"},
+                "t_in": {"type": "number"}, "t_out": {"type": "number"},
             },
             "required": ["mass_flow", "cp", "t_in", "t_out"],
         },
@@ -333,25 +471,63 @@ TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "density": {"type": "number", "description": "Fluid density (kg/m3)"},
-                "velocity": {"type": "number", "description": "Flow velocity (m/s)"},
-                "diameter": {"type": "number", "description": "Pipe diameter (m)"},
-                "viscosity": {"type": "number", "description": "Dynamic viscosity (Pa*s)"},
+                "density": {"type": "number"}, "velocity": {"type": "number"},
+                "diameter": {"type": "number"}, "viscosity": {"type": "number"},
             },
             "required": ["density", "velocity", "diameter", "viscosity"],
+        },
+    },
+    {
+        "name": "pubchem_search",
+        "description": "Real-time PubChem (NIH) compound lookup: molecular formula, weight, IUPAC name.",
+        "tool_type": "external_api",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Compound name (Chinese or English)"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "pubchem_toxicity",
+        "description": "Query GHS hazard classification and toxicity data from PubChem.",
+        "tool_type": "external_api",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Compound name"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "nist_thermo",
+        "description": "Search NIST Chemistry WebBook for thermodynamic data (enthalpy, entropy, heat capacity).",
+        "tool_type": "external_api",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Chemical formula, e.g. H2SO4"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "arxiv_search",
+        "description": "Retrieve latest academic papers from ArXiv.",
+        "tool_type": "external_api",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Search keywords"}},
+            "required": ["query"],
         },
     },
 ]
 
 
 def execute_tool(name: str, args: dict) -> str:
-    """Execute a tool by name. Returns result string."""
     fn = TOOL_FUNCTIONS.get(name)
     if fn is None:
         return f"ERROR: Unknown tool: {name}"
     try:
-        return fn(**args)
-    except TypeError as e:
-        return f"ERROR: Invalid arguments for {name}: {e}"
+        # Map 'query' arg to function's expected parameter name for external APIs
+        if "query" in args and name in ("pubchem_search", "pubchem_toxicity", "nist_thermo", "arxiv_search"):
+            return str(fn(args["query"]))
+        return str(fn(**args))
     except Exception as e:
         return f"ERROR: Tool execution failed ({name}): {e}"

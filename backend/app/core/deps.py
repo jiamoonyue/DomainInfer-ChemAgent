@@ -81,3 +81,36 @@ async def get_current_admin(current_user: CurrentUser) -> User:
 
 
 CurrentAdmin = Annotated[User, Depends(get_current_admin)]
+
+
+async def get_optional_user_no_raise(authorization: str, db: AsyncSession):
+    """Middleware-friendly user extractor — takes auth string + session directly, never raises.
+
+    Used by AuthMiddleware to validate tokens outside of FastAPI's dependency injection.
+    """
+    import hashlib
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        return None
+
+    # Try JWT
+    payload = decode_token(token)
+    if payload and payload.get("type") == "access":
+        user_id = payload.get("sub")
+        if user_id:
+            result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+            user = result.scalar_one_or_none()
+            if user and user.is_active:
+                return user
+
+    # Try API Key
+    key_hash = hashlib.sha256(token.encode()).hexdigest()
+    result = await db.execute(select(ApiKey).where(ApiKey.key_hash == key_hash))
+    api_key = result.scalar_one_or_none()
+    if api_key:
+        result = await db.execute(select(User).where(User.id == api_key.user_id))
+        user = result.scalar_one_or_none()
+        if user and user.is_active:
+            return user
+
+    return None

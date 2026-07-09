@@ -159,8 +159,21 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
+    # Prompt Configs (Design doc 5.8: versioned prompt templates)
+    op.create_table(
+        "prompt_configs",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("agent_type", sa.String(64), nullable=False),
+        sa.Column("version", sa.Integer, nullable=False),
+        sa.Column("template_path", sa.String(512), nullable=False),
+        sa.Column("is_active", sa.Boolean, default=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+
 
 def downgrade() -> None:
+    op.drop_table("prompt_configs")
     op.drop_table("token_usage_logs")
     op.drop_table("tool_call_logs")
     op.drop_table("tool_definitions")

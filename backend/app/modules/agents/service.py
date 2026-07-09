@@ -27,11 +27,7 @@ from app.modules.tools.engine import execute_tool, TOOL_DEFINITIONS
 # ============================================================
 
 class AgentState(TypedDict):
-    """LangGraph state — holds the full conversation context.
-
-    Messages are stored as a plain list of dicts (not LangChain Message objects).
-    This avoids LangGraph's automatic message type conversion which breaks our dict-based API.
-    """
+    """LangGraph state — holds the full conversation context."""
     messages: list[dict]
     tool_call: dict | None
     tool_result: str | None
@@ -39,6 +35,7 @@ class AgentState(TypedDict):
     iteration: int
     final_answer: str
     agent_name: str
+    agent_type: str  # "calculation" | "safety" | "knowledge" | "process"
 
 
 # ============================================================
@@ -159,11 +156,21 @@ def _parse_tool_call(text: str) -> dict | None:
 
 
 class AgentGraph:
-    """LangGraph-based Agent with ReAct loop, tools, and RAG.
+    """LangGraph-based Agent with ReAct loop, tools, RAG, and Multi-Agent routing.
 
-    设计文档流程:
+    Design doc 5.2 flow:
       START → classify → think → [tool?] → execute_tool → observe → think → respond → END
     """
+
+    # Agent routing keywords (from old ChemAgent + YAML configs)
+    AGENT_KEYWORDS = {
+        "calculation": ["计算", "calculate", "分子量", "换算", "convert", "雷诺", "reynolds",
+                       "配平", "balance", "理想气体", "多少", "?", "换热器", "管径", "流速", "热负荷"],
+        "safety": ["安全", "危险", "有毒", "msds", "safety", "hazard", "toxic",
+                  "flammable", "explosive", "corrosive", "防护", "泄漏", "爆炸", "腐蚀", "ppe", "应急"],
+        "process": ["设计", "design", "工艺", "process", "选型", "优化", "optimize",
+                   "pfd", "pid", "流程图", "设备", "equipment", "精馏", "蒸馏"],
+    }
 
     def __init__(self, provider: BaseLLMProvider, executor: ToolExecutor, agent_name: str = "AgentForge"):
         self.provider = provider
@@ -171,28 +178,72 @@ class AgentGraph:
         self.agent_name = agent_name
         self._graph = self._build_graph()
 
+    def _classify_query(self, user_message: str) -> str:
+        """Route query to the best agent type. Keyword-based (fast, deterministic)."""
+        msg_lower = user_message.lower()
+        scores = {}
+        for agent_type, kws in self.AGENT_KEYWORDS.items():
+            scores[agent_type] = sum(1 for kw in kws if kw in msg_lower)
+            if agent_type in ("calculation", "process") and len(user_message.split()) <= 20:
+                scores[agent_type] *= 1.5
+
+        # Default to knowledge agent
+        scores.setdefault("knowledge", 0.1)
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        if ranked[0][1] >= 2 and (len(ranked) == 1 or ranked[0][1] >= 2 * ranked[1][1]):
+            return ranked[0][0]
+        if ranked[0][1] > 0:
+            return ranked[0][0]
+        return "knowledge"
+
     def _build_graph(self) -> StateGraph:
         builder = StateGraph(AgentState)
 
+        builder.add_node("classify", self._classify_node)
         builder.add_node("think", self._think)
         builder.add_node("execute_tool", self._execute_tool)
         builder.add_node("respond", self._respond)
 
-        builder.set_entry_point("think")
+        builder.set_entry_point("classify")
+        builder.add_edge("classify", "think")
 
         builder.add_conditional_edges(
             "think",
             self._route_after_think,
-            {
-                "execute_tool": "execute_tool",
-                "respond": "respond",
-            },
+            {"execute_tool": "execute_tool", "respond": "respond"},
         )
 
-        builder.add_edge("execute_tool", "think")  # loop back
+        builder.add_edge("execute_tool", "think")
         builder.add_edge("respond", END)
 
         return builder.compile()
+
+    def _classify_node(self, state: AgentState) -> AgentState:
+        """Route the query to the right agent type."""
+        user_msg = ""
+        for m in reversed(state["messages"]):
+            role = m["role"] if isinstance(m, dict) else getattr(m, "role", "")
+            content = m["content"] if isinstance(m, dict) else getattr(m, "content", "")
+            if role == "user":
+                user_msg = content
+                break
+
+        agent_type = self._classify_query(user_msg)
+        state["agent_type"] = agent_type
+
+        # Adapt system prompt based on agent type
+        if state["messages"] and isinstance(state["messages"][0], dict) and state["messages"][0]["role"] == "system":
+            system = state["messages"][0]["content"]
+            type_hints = {
+                "calculation": "\n\n[You are acting as the Calculation Agent. Use tools for all numeric work.]",
+                "safety": "\n\n[You are acting as the Safety Agent. Cite standards and give actionable advice.]",
+                "knowledge": "\n\n[You are acting as the Knowledge Agent. Provide precise definitions and explanations.]",
+                "process": "\n\n[You are acting as the Process Design Agent. Consider feasibility, economics, and safety.]",
+            }
+            system += type_hints.get(agent_type, "")
+            state["messages"][0]["content"] = system
+
+        return state
 
     async def _think(self, state: AgentState) -> AgentState:
         """LLM reasoning — generates response, may call a tool.
@@ -339,6 +390,7 @@ class AgentEngine:
             "iteration": 0,
             "final_answer": "",
             "agent_name": self.agent_name,
+            "agent_type": "knowledge",
         }
 
         compiled = self.graph.get_graph()

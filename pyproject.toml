@@ -1,0 +1,43 @@
+[project]
+name = "agentforge"
+version = "0.1.0"
+description = "Enterprise AI Agent Development Platform"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.136",
+    "uvicorn[standard]>=0.48",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "redis>=5.2",
+    "pydantic-settings>=2.14",
+    "python-dotenv>=1.2",
+    "pyjwt>=2.13",
+    "bcrypt>=5.0",
+    "python-multipart>=0.0.29",
+    "litellm>=1.50",
+    "langgraph>=0.2",
+    "pyyaml>=6.0",
+    "httpx>=0.28",
+    "prometheus-client>=0.21",
+    "chromadb>=1.5",
+    "sentence-transformers>=5.5",
+    "rank-bm25>=0.2",
+    "numpy>=1.22",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio>=0.24",
+]
+otel = [
+    "opentelemetry-api>=1.42",
+    "opentelemetry-sdk>=1.42",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.42",
+    "opentelemetry-instrumentation-fastapi>=0.63b1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
