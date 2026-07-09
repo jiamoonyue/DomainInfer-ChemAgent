@@ -56,6 +56,23 @@ async def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+async def get_optional_user(
+    authorization: str = Header(default=""),
+    db: AsyncSession = Depends(_get_db),
+) -> User | None:
+    """Extract user from token if present, otherwise return None. Never raises."""
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        return None
+    try:
+        return await get_current_user(authorization=authorization, db=db)
+    except (UnauthorizedException, Exception):
+        return None
+
+
+OptionalUser = Annotated[User | None, Depends(get_optional_user)]
+
+
 async def get_current_admin(current_user: CurrentUser) -> User:
     """Require admin role."""
     if current_user.role != "admin":

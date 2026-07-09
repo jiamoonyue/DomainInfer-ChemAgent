@@ -99,25 +99,13 @@ from app.modules.agents.router import router as agents_router
 from app.modules.rag.router import router as rag_router
 from app.modules.conversations.router import router as conversations_router
 from app.modules.observability.router import router as observability_router
-
-# Placeholders (replaced in P2/P3)
-tools_router = APIRouter(prefix="/tools", tags=["Tools"])
-knowledge_router = APIRouter(prefix="/knowledge", tags=["Knowledge"])
+from app.modules.tools.router import router as tools_router
+from app.modules.knowledge.router import router as knowledge_router
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(agents_router, prefix="/api")
 app.include_router(rag_router, prefix="/api")
 app.include_router(conversations_router, prefix="/api")
 app.include_router(observability_router, prefix="/api")
-
-# Placeholder pings for incomplete modules
-@tools_router.get("/ping")
-async def tools_ping():
-    return {"module": "tools", "status": "pending"}
-
-@knowledge_router.get("/ping")
-async def knowledge_ping():
-    return {"module": "knowledge", "status": "pending"}
-
 app.include_router(tools_router, prefix="/api")
 app.include_router(knowledge_router, prefix="/api")
