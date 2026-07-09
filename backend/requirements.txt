@@ -1,0 +1,35 @@
+# ========================================
+# AgentForge Backend Dependencies
+# ========================================
+
+# ---- Web Framework ----
+fastapi==0.136.1
+uvicorn[standard]==0.48.0
+
+# ---- Database ----
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.1
+psycopg2-binary==2.9.10
+
+# ---- Redis ----
+redis==5.2.1
+
+# ---- Config & Env ----
+pydantic-settings==2.14.1
+python-dotenv==1.2.2
+
+# ---- Auth ----
+pyjwt==2.13.0
+bcrypt==5.0.0
+python-multipart==0.0.29
+
+# ---- Observability ----
+opentelemetry-api==1.42.1
+opentelemetry-sdk==1.42.1
+opentelemetry-exporter-otlp-proto-grpc==1.42.1
+opentelemetry-instrumentation-fastapi==0.63b1
+
+# ---- Utils ----
+pyyaml==6.0.3
+httpx==0.28.1
