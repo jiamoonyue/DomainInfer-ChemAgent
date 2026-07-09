@@ -1,0 +1,22 @@
+name: Knowledge Agent
+description: 化工知识问答
+emoji: "📚"
+
+system_prompt: "knowledge_v1.j2"
+prompt_variables:
+  domain: "化工"
+
+tools: []
+
+rag:
+  namespace: chem
+  retrieval_strategy: agentic
+
+llm:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.5
+  max_tokens: 2048
+
+fallback:
+  enabled: true

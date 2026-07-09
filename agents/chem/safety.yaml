@@ -1,0 +1,27 @@
+name: Safety Agent
+description: 化工安全与规范
+emoji: "🛡️"
+
+system_prompt: "safety_v1.j2"
+prompt_variables:
+  domain: "化工"
+  standards: "GB 13690, GB 18218"
+
+tools:
+  - convert_unit
+
+rag:
+  namespace: chem
+  retrieval_strategy: hybrid
+  sources:
+    - kb_safety
+    - chemical_safety_standards
+
+llm:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.3
+  max_tokens: 2048
+
+fallback:
+  enabled: true

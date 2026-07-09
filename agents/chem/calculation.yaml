@@ -1,0 +1,33 @@
+name: Calculation Agent
+description: 化工工程计算专家
+emoji: "🔬"
+
+system_prompt: "calculation_v1.j2"
+prompt_variables:
+  domain: "化工"
+
+tools:
+  - calculate_molecular_weight
+  - balance_equation
+  - convert_unit
+  - calculate_ideal_gas
+  - heat_exchanger_duty
+  - reynolds_number
+
+rag:
+  namespace: chem
+  retrieval_strategy: agentic
+  sources:
+    - kb_heat_transfer
+    - kb_mass_transfer
+    - kb_fluid_mechanics
+    - kb_reaction
+
+llm:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.3
+  max_tokens: 2048
+
+fallback:
+  enabled: true

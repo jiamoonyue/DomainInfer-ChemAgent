@@ -9,6 +9,7 @@ from app.core.config import settings, PROJECT_ROOT
 from app.core.database import init_db, AsyncSessionLocal
 from app.core.exceptions import register_exception_handlers
 from app.core.redis import check_redis, close_redis
+from app.core.otel import setup_otel, shutdown_otel
 from app.modules.auth.service import bootstrap_admin
 
 
@@ -35,7 +36,11 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Setup OpenTelemetry
+    setup_otel(app)
+
     print("[AgentForge] Shutting down...")
+    shutdown_otel()
     await close_redis()
 
 

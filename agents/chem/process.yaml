@@ -1,0 +1,29 @@
+name: Process Agent
+description: 工艺设计与优化
+emoji: "⚙️"
+
+system_prompt: "process_v1.j2"
+prompt_variables:
+  domain: "化工"
+
+tools:
+  - convert_unit
+  - heat_exchanger_duty
+  - reynolds_number
+
+rag:
+  namespace: chem
+  retrieval_strategy: agentic
+  sources:
+    - kb_reaction
+    - kb_process_control
+    - kb_equipment
+
+llm:
+  provider: deepseek
+  model: deepseek-v4-flash
+  temperature: 0.4
+  max_tokens: 2048
+
+fallback:
+  enabled: true
