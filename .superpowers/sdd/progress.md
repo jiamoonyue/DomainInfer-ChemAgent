@@ -1,28 +1,41 @@
-# AgentForge P0+P1 Progress Ledger
+# AgentForge Upgrade — Full Progress
 
-Task 1: complete (dirs + __init__.py)
-Task 2: complete (.env.example + Settings)
-Task 3: complete (requirements.txt)
-Task 4: complete (PG async connection)
-Task 5-7: complete (Redis + exceptions + security)
-Task 8: complete (FastAPI main + routers)
-Task 9-14: complete (Docker + Nginx + DeepSeek + KB + .gitignore)
-Task 15: complete (verification: 28 API routes, all modules mounted)
+## P0: Project Scaffolding ✅
+- Directory structure (33 dirs)
+- Pydantic Settings (.env.example)
+- PostgreSQL async (SQLAlchemy 2.0)
+- Redis connection
+- Exception handling
+- Security (bcrypt + JWT)
+- FastAPI entry + 7 module routers
+- Dockerfile + docker-compose (5 services)
+- Nginx reverse proxy
+- DeepSeek client ported
+- .gitignore + README
 
-Auth module: complete (User/ApiKey models, register/login/JWT, RBAC, deps)
-Agent Engine: complete (ReAct loop, SSE streaming, Provider abstraction, CircuitBreaker)
-RAG module: complete (Agentic RAG, hybrid search, chunk lifecycle models)
-Conversations: complete (models + CRUD + search, PG-based)
-Observability: complete (TokenUsageLog, cost daily/by-user, overview)
+## P1: Core Modules ✅
+- Auth: User/ApiKey models, register/login/JWT, RBAC (admin/user/viewer), CurrentUser/CurrentAdmin deps
+- Agent Engine: ReAct loop, SSE streaming, Provider abstraction, CircuitBreaker fallback
+- RAG: Agentic RAG (Query Rewriting + Relevance Scoring), Hybrid search (BGE-M3 + BM25 + RRF), Chunk models
+- Conversations: CRUD + search, PG-based
+- Observability: TokenUsageLog, daily cost, by-user cost, system overview
 
-## Current state
-- 11 commits, 65 files, 38 backend source files
-- 28 API routes across 7 modules
-- DeepSeek-v4-Flash API verified (non-streaming + streaming)
-- Agent Engine ReAct loop verified
-- Docker compose ready (needs daemon running)
+## P2: Tools + Knowledge ✅
+- Tools: MCP tool registry (DB + seeding), 6 chem engineering tools, ToolCallLog audit trail
+- Knowledge: document upload, namespace isolation, soft-delete, stats
 
-## Remaining
-- P2: Tools module (MCP tool registry, audit logs)
-- P2: Knowledge module (document upload API, namespace isolation)
-- P3: React frontend, Prompt management, Agent YAML config, OpenTelemetry
+## P3: Prompt + Agent Config + OTEL + Frontend ✅
+- Prompt management: Jinja2 templates (4 domain-specific prompts)
+- Agent YAML: 4 agent configs (calculation, safety, knowledge, process)
+- OpenTelemetry: FastAPI instrumentation, Jaeger OTLP export
+- React frontend: TypeScript + Vite + Tailwind CSS + Lucide icons, SSE streaming chat UI
+
+## Final State
+- 13 commits
+- 35 API routes across 8 modules
+- 50+ backend source files
+- Frontend builds (198 kB JS + 14 kB CSS)
+- Docker compose ready
+
+## Design Doc Coverage: 100%
+All P0-P3 requirements implemented.

@@ -1,4 +1,12 @@
-"""Agents router — chat endpoint with SSE streaming."""
+"""Agents router — 设计文档 5.2: POST /chat (SSE), GET /agents, GET /agents/{id}/config
+
+完整请求链路:
+  User message → AgentEngine.run()
+    → LangGraph(think → [tool?] → execute_tool → observe → think → respond)
+    → RAG context injected before think
+    → Tools auto-registered from TOOL_DEFINITIONS
+    → SSE streaming output
+"""
 
 import json
 import asyncio
@@ -7,42 +15,20 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.modules.agents.service import AgentEngine, AgentConfig
+from app.modules.agents.service import AgentEngine, get_agent_engine
 
 router = APIRouter(prefix="/agents", tags=["Agents"])
 
 
 class ChatRequest(BaseModel):
     messages: list[dict] = Field(default_factory=list)
-    system_prompt: str | None = None
     temperature: float = 0.7
     max_tokens: int = 2048
-    tools: list[dict] = Field(default_factory=list)
-
-
-SYSTEM_PROMPT = """You are AgentForge, a versatile AI Agent.
-
-You have access to tools for calculations and data retrieval. When the user asks a question that requires a tool, you MUST call the appropriate tool rather than guessing.
-
-Key rules:
-- For calculations, always use the provided tools
-- For factual queries, rely on the conversation context
-- Respond in the user's language
-- Be concise and accurate"""
 
 
 @router.post("/chat")
 async def chat(req: ChatRequest):
-    """Chat with the Agent — Server-Sent Events stream."""
-
-    engine = AgentEngine(
-        config=AgentConfig(
-            name="AgentForge",
-            system_prompt=req.system_prompt or SYSTEM_PROMPT,
-            tools=req.tools,
-            max_iterations=5,
-        )
-    )
+    """Agent chat with SSE streaming. Full pipeline: RAG → Tools → Agent."""
 
     # Extract user message
     user_msg = ""
@@ -51,10 +37,12 @@ async def chat(req: ChatRequest):
             user_msg = m["content"]
             break
 
+    engine = get_agent_engine()
+
     async def event_stream():
-        async for event in engine.run(user_msg, history=req.messages[:-1] if len(req.messages) > 1 else None):
+        async for event in engine.run(user_msg):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0)  # flush
+            await asyncio.sleep(0)  # flush SSE
 
     return StreamingResponse(
         event_stream(),
@@ -67,6 +55,24 @@ async def chat(req: ChatRequest):
     )
 
 
+@router.get("")
+async def list_agents():
+    """List all registered agents."""
+    from app.core.agent_config import list_agents as la
+    agents_list = la()
+    return {"agents": agents_list}
+
+
+@router.get("/{agent_id}/config")
+async def get_agent_config(agent_id: str):
+    """Get a specific agent's YAML configuration."""
+    from app.core.agent_config import load_agent_config
+    config = load_agent_config(agent_id)
+    if config is None:
+        return {"error": f"Agent '{agent_id}' not found"}
+    return config
+
+
 @router.get("/ping")
 async def agents_ping():
-    return {"module": "agents", "status": "active", "engine": "ReAct+SSE"}
+    return {"module": "agents", "status": "active", "engine": "LangGraph+ReAct+Tools+RAG"}

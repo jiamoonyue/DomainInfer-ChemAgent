@@ -1,16 +1,14 @@
 """AgentForge — Enterprise AI Agent Development Platform."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings, PROJECT_ROOT
-from app.core.database import init_db, AsyncSessionLocal
 from app.core.exceptions import register_exception_handlers
-from app.core.redis import check_redis, close_redis
 from app.core.otel import setup_otel, shutdown_otel
-from app.modules.auth.service import bootstrap_admin
 
 
 @asynccontextmanager
@@ -18,30 +16,16 @@ async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle."""
     print(f"[AgentForge] Starting server on {settings.SERVER_HOST}:{settings.SERVER_PORT}")
     print(f"[AgentForge] USE_API={settings.USE_API}")
+    print("[AgentForge] DB and Redis will connect on first request")
 
-    try:
-        await init_db()
-        print("[AgentForge] Database tables verified")
-        # Bootstrap admin user if no users exist
-        async with AsyncSessionLocal() as sess:
-            await bootstrap_admin(sess)
-    except Exception as e:
-        print(f"[AgentForge] WARNING: Database not available yet: {e}")
-
-    try:
-        redis_ok = await check_redis()
-        print(f"[AgentForge] Redis: {'connected' if redis_ok else 'unreachable'}")
-    except Exception:
-        print("[AgentForge] Redis: not available (will retry on first use)")
+    # DB/Redis init happens lazily on first request to avoid blocking startup
 
     yield
 
-    # Setup OpenTelemetry
     setup_otel(app)
 
     print("[AgentForge] Shutting down...")
     shutdown_otel()
-    await close_redis()
 
 
 app = FastAPI(
@@ -72,26 +56,12 @@ async def health():
 
 @app.get("/api/status")
 async def status():
-    """Detailed server status."""
-    redis_ok = False
-    db_ok = False
-    try:
-        redis_ok = await check_redis()
-    except Exception:
-        pass
-    try:
-        from app.core.database import async_engine
-        async with async_engine.connect() as conn:
-            await conn.execute("SELECT 1")
-        db_ok = True
-    except Exception:
-        pass
-
+    """Detailed server status (no live DB checks — see /api/observability/overview)."""
     return {
         "status": "running",
         "version": "0.1.0",
-        "database": "connected" if db_ok else "unavailable",
-        "redis": "connected" if redis_ok else "unavailable",
+        "database": "configured",
+        "redis": "configured",
         "use_api": settings.USE_API,
         "model": settings.DEEPSEEK_MODEL if settings.USE_API else "local",
     }

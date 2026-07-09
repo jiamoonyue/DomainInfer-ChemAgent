@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # ---- LLM API ----
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_API_BASE: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL: str = "deepseek-v4-flash"
+    DEEPSEEK_MODEL: str = "deepseek-chat"
     USE_API: bool = True
 
     # ---- Auth ----

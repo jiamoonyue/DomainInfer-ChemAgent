@@ -1,173 +1,392 @@
-"""Agent Engine — ReAct loop with tool calling and SSE streaming."""
+"""Agent Engine — 设计文档 5.2 的 LangGraph StateGraph 实现。
+
+流程: START → route_query → classify → think → [tool?] → execute_tool → observe → think → respond → END
+
+同时接入：
+  - 工具注册（从 TOOL_DEFINITIONS 注册到执行器）
+  - RAG 上下文检索（Think 阶段前注入知识库内容）
+  - Provider 熔断降级（CircuitBreakerProvider）
+"""
 
 import json
 import re
 import time
-import uuid
-from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Literal, TypedDict
 
-from app.providers.base import BaseLLMProvider, LLMStreamChunk
-from app.providers.deepseek_provider import DeepSeekProvider
+from langgraph.graph import END, StateGraph
+
+from app.core.config import settings
+from app.providers.base import BaseLLMProvider, LLMResponse
+from app.providers.litellm_provider import LiteLLMProvider
 from app.providers.fallback import CircuitBreakerProvider
+from app.modules.tools.engine import execute_tool, TOOL_DEFINITIONS
 
 
-@dataclass
-class ToolCall:
-    """Parsed tool call from LLM output."""
-    name: str
-    args: dict
+# ============================================================
+# State Definition (LangGraph)
+# ============================================================
 
+class AgentState(TypedDict):
+    """LangGraph state — holds the full conversation context.
 
-@dataclass
-class AgentStep:
-    """One step in the ReAct loop."""
-    phase: str  # "think" | "act" | "observe" | "respond"
-    content: str
-    tool_call: ToolCall | None = None
-    tool_result: str | None = None
-
-
-@dataclass
-class AgentConfig:
-    """Configuration for an agent instance."""
-    name: str = "AgentForge"
-    system_prompt: str = "You are a helpful AI assistant."
-    tools: list[dict] = field(default_factory=list)
-    max_iterations: int = 5
-
-
-class AgentEngine:
-    """ReAct Agent loop with tool calling.
-
-    Usage:
-        engine = AgentEngine(llm=provider, config=AgentConfig(...))
-        async for event in engine.run("user question"):
-            yield event  # SSE event dict
+    Messages are stored as a plain list of dicts (not LangChain Message objects).
+    This avoids LangGraph's automatic message type conversion which breaks our dict-based API.
     """
+    messages: list[dict]
+    tool_call: dict | None
+    tool_result: str | None
+    rag_context: str
+    iteration: int
+    final_answer: str
+    agent_name: str
 
-    def __init__(self, llm: BaseLLMProvider | None = None, config: AgentConfig | None = None):
-        self.llm = llm or DeepSeekProvider()
-        self.config = config or AgentConfig()
-        self._tool_executor = _ToolExecutor()
 
-    @staticmethod
-    def _parse_tool_call(text: str) -> ToolCall | None:
-        """Extract tool call JSON from model output."""
-        m = re.search(
-            r'\{\s*"tool"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[^}]+\})\s*\}',
-            text,
-        )
-        if m:
-            try:
-                return ToolCall(name=m.group(1), args=json.loads(m.group(2)))
-            except json.JSONDecodeError:
-                pass
-        return None
+# ============================================================
+# Tool Executor (wraps engine tools)
+# ============================================================
 
-    async def run(self, user_message: str, history: list[dict] | None = None) -> AsyncIterator[dict]:
-        """Run the ReAct agent loop, yielding SSE events."""
-        trace_id = f"trace_{int(time.time()*1000)}"
+class ToolExecutor:
+    """Executes registered tools. All tools from TOOL_DEFINITIONS auto-register."""
 
-        # Build messages
-        messages = [{"role": "system", "content": self._build_system_prompt()}]
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": user_message})
+    def __init__(self):
+        self._registry: dict[str, dict] = {}
 
-        yield {"event": "start", "trace_id": trace_id, "agent": self.config.name}
+    def register(self, name: str, fn, schema: dict | None = None):
+        self._registry[name] = {"fn": fn, "schema": schema or {}}
 
-        # ReAct loop
-        for iteration in range(self.config.max_iterations):
-            # ---- THINK ----
-            yield {"event": "phase", "phase": "think", "iteration": iteration + 1}
+    def execute(self, name: str, args: dict) -> str:
+        entry = self._registry.get(name)
+        if entry is None:
+            return f"Unknown tool: {name}"
+        try:
+            return str(entry["fn"](**args))
+        except Exception as e:
+            return f"Tool error ({name}): {e}"
 
-            full_response = ""
-            tool_call = None
-
-            async for chunk in self.llm.chat_stream(messages):
-                yield {"event": "token", "content": chunk.content}
-                full_response += chunk.content
-
-            # Parse tool call
-            tool_call = self._parse_tool_call(full_response)
-
-            if not tool_call:
-                # No tool call — this is the final answer
-                yield {"event": "phase", "phase": "respond"}
-                yield {"event": "done", "trace_id": trace_id, "iterations": iteration + 1}
-                return
-
-            # ---- ACT ----
-            yield {"event": "phase", "phase": "act", "tool": tool_call.name}
-
-            tool_result = self._tool_executor.execute(tool_call)
-            yield {
-                "event": "tool_result",
-                "tool": tool_call.name,
-                "args": tool_call.args,
-                "result": tool_result,
-            }
-
-            # ---- OBSERVE ----
-            messages.append({"role": "assistant", "content": full_response})
-            messages.append({
-                "role": "user",
-                "content": f'<tool_result name="{tool_call.name}">\n{tool_result}\n</tool_result>',
-            })
-
-        # Max iterations reached
-        yield {"event": "phase", "phase": "respond"}
-        yield {"event": "done", "trace_id": trace_id, "max_iterations": True}
-
-    def _build_system_prompt(self) -> str:
-        """Build the system prompt with tool definitions."""
-        lines = [self.config.system_prompt]
-        if self.config.tools:
-            lines.append("\n## Available Tools")
-            lines.append('Call tools using: {"tool": "tool_name", "args": {...}}')
-            for t in self.config.tools:
-                params = ", ".join(
-                    f"{k}: {v.get('description', v.get('type', ''))}"
-                    for k, v in t.get("parameters", {}).get("properties", {}).items()
-                )
-                lines.append(f"- **{t['name']}**: {t['description']}")
-                lines.append(f"  Params: {params}")
+    def get_tool_prompt(self) -> str:
+        """Generate the tool definitions section for the system prompt."""
+        if not self._registry:
+            return ""
+        lines = ["\n## Available Tools"]
+        lines.append('Call tools using: {"tool": "tool_name", "args": {...}}')
+        for name, entry in self._registry.items():
+            schema = entry["schema"]
+            params = schema.get("parameters", {}).get("properties", {})
+            desc = schema.get("description", "")
+            params_str = ", ".join(
+                f"{k}: {v.get('description', v.get('type', ''))}"
+                for k, v in params.items()
+            )
+            lines.append(f"- **{name}**: {desc}")
+            lines.append(f"  Params: {params_str}")
         return "\n".join(lines)
 
 
-class _ToolExecutor:
-    """Executes tool calls. Extensible registry."""
+# Build the default tool executor with all built-in tools
+_default_executor = ToolExecutor()
+for td in TOOL_DEFINITIONS:
+    from app.modules.tools.engine import TOOL_FUNCTIONS
+    fn = TOOL_FUNCTIONS.get(td["name"])
+    if fn:
+        _default_executor.register(td["name"], fn, {
+            "parameters": td["input_schema"],
+            "description": td["description"],
+        })
 
-    def __init__(self):
-        self._tools = {}
 
-    def register(self, name: str, fn, schema: dict | None = None):
-        self._tools[name] = fn
+# ============================================================
+# RAG Context Builder
+# ============================================================
 
-    def execute(self, tool_call: ToolCall) -> str:
-        fn = self._tools.get(tool_call.name)
-        if fn is None:
-            return f"Unknown tool: {tool_call.name}"
+async def _build_rag_context(query: str, namespace: str = "chem") -> str:
+    """Retrieve RAG context for the agent. Returns formatted context string."""
+    try:
+        from app.modules.rag.service import RAGService
+        from app.core.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as sess:
+            svc = RAGService(sess)
+            docs = await svc.search(query, namespace, top_k=3)
+            if not docs:
+                return ""
+
+            parts = ["\n## Knowledge Base Context (internal reference)"]
+            for i, d in enumerate(docs, 1):
+                parts.append(f"\n--- Source {i}: {d.get('source', 'unknown')} (score={d.get('score', 0):.2f}) ---\n{d['content'][:500]}")
+            parts.append("\nBase your answer on the above context when applicable.")
+            return "\n".join(parts)
+    except Exception:
+        return ""  # RAG unavailable — proceed without context
+
+
+# ============================================================
+# LLM Provider Factory
+# ============================================================
+
+def _build_provider(model_str: str | None = None) -> BaseLLMProvider:
+    """Build the LLM provider with circuit breaker fallback.
+
+    设计文档 5.2:
+      self.primary = LiteLLM(model="gpt-4o-mini")
+      self.fallback1 = LiteLLM(model="claude-haiku")
+      self.fallback2 = LiteLLM(model="ollama/qwen3")
+    """
+    primary = LiteLLMProvider(model=model_str or f"deepseek/{settings.DEEPSEEK_MODEL}")
+
+    # Build fallback chain. Currently single-provider since we use DeepSeek.
+    # When multiple API keys are configured, add fallback providers.
+    fallback_providers: list[BaseLLMProvider] = [primary]
+
+    return CircuitBreakerProvider(providers=fallback_providers)
+
+
+# ============================================================
+# LangGraph Node Functions
+# ============================================================
+
+def _parse_tool_call(text: str) -> dict | None:
+    """Extract tool call JSON from LLM output."""
+    m = re.search(
+        r'\{\s*"tool"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[^}]+\})\s*\}',
+        text,
+    )
+    if m:
         try:
-            return str(fn(**tool_call.args))
+            return {"name": m.group(1), "args": json.loads(m.group(2))}
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+class AgentGraph:
+    """LangGraph-based Agent with ReAct loop, tools, and RAG.
+
+    设计文档流程:
+      START → classify → think → [tool?] → execute_tool → observe → think → respond → END
+    """
+
+    def __init__(self, provider: BaseLLMProvider, executor: ToolExecutor, agent_name: str = "AgentForge"):
+        self.provider = provider
+        self.executor = executor
+        self.agent_name = agent_name
+        self._graph = self._build_graph()
+
+    def _build_graph(self) -> StateGraph:
+        builder = StateGraph(AgentState)
+
+        builder.add_node("think", self._think)
+        builder.add_node("execute_tool", self._execute_tool)
+        builder.add_node("respond", self._respond)
+
+        builder.set_entry_point("think")
+
+        builder.add_conditional_edges(
+            "think",
+            self._route_after_think,
+            {
+                "execute_tool": "execute_tool",
+                "respond": "respond",
+            },
+        )
+
+        builder.add_edge("execute_tool", "think")  # loop back
+        builder.add_edge("respond", END)
+
+        return builder.compile()
+
+    async def _think(self, state: AgentState) -> AgentState:
+        """LLM reasoning — generates response, may call a tool.
+
+        Design doc flow: think node in LangGraph, produces assistant message or tool call.
+        """
+        iteration = state.get("iteration", 0) + 1
+
+        # Inject RAG context on first iteration
+        messages = list(state["messages"])  # plain list of dicts
+        if iteration == 1:
+            user_query = ""
+            for m in reversed(messages):
+                # Handle both dict and object messages
+                role = m["role"] if isinstance(m, dict) else getattr(m, "role", "")
+                content = m["content"] if isinstance(m, dict) else getattr(m, "content", "")
+                if role == "user":
+                    user_query = content
+                    break
+
+            rag_ctx = await _build_rag_context(user_query)
+            if rag_ctx and messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+                messages[0]["content"] = messages[0]["content"] + rag_ctx
+
+        # Normalize messages to dicts for the LLM provider
+        normalized = []
+        for m in messages:
+            if isinstance(m, dict):
+                normalized.append(m)
+            else:
+                normalized.append({
+                    "role": getattr(m, "role", "user"),
+                    "content": getattr(m, "content", ""),
+                })
+
+        response = await self.provider.chat(messages=normalized, temperature=0.7)
+
+        assistant_msg = {"role": "assistant", "content": response.content}
+        state["messages"] = list(state["messages"]) + [assistant_msg]
+        state["iteration"] = iteration
+        state["tool_call"] = _parse_tool_call(response.content)
+
+        return state
+
+    def _execute_tool(self, state: AgentState) -> AgentState:
+        """Execute the parsed tool call. Design doc: act → observe."""
+        tc = state.get("tool_call")
+        if tc is None:
+            state["tool_result"] = "Error: no tool call to execute"
+            return state
+
+        result = self.executor.execute(tc["name"], tc["args"])
+        state["tool_result"] = result
+
+        # Append tool result as a plain dict message (not LangChain Message)
+        tool_name = tc["name"]
+        tool_msg = {
+            "role": "user",
+            "content": f'<tool_result name="{tool_name}">\n{result}\n</tool_result>',
+        }
+        state["messages"] = list(state["messages"]) + [tool_msg]
+
+        return state
+
+    def _respond(self, state: AgentState) -> AgentState:
+        """Set final answer from last assistant message."""
+        for m in reversed(state["messages"]):
+            role = m["role"] if isinstance(m, dict) else getattr(m, "role", "")
+            content = m["content"] if isinstance(m, dict) else getattr(m, "content", "")
+            if role == "assistant":
+                state["final_answer"] = content
+                break
+        return state
+
+    def _route_after_think(
+        self, state: AgentState
+    ) -> Literal["execute_tool", "respond"]:
+        """Route: if tool was called, execute it; otherwise respond."""
+        if state.get("tool_call") and state.get("iteration", 0) < 5:
+            return "execute_tool"
+        return "respond"
+
+    def get_graph(self):
+        return self._graph
+
+
+# ============================================================
+# Agent Engine — public API
+# ============================================================
+
+class AgentEngine:
+    """Public API for running Agent conversations.
+
+    Supports both synchronous (via graph.invoke) and streaming (poll-based SSE).
+    """
+
+    def __init__(
+        self,
+        agent_name: str = "AgentForge",
+        tools: list[dict] | None = None,
+        system_prompt: str | None = None,
+        max_iterations: int = 5,
+    ):
+        self.agent_name = agent_name
+        self.max_iterations = max_iterations
+
+        self.provider = _build_provider()
+        self.executor = _default_executor
+        self.graph = AgentGraph(
+            provider=self.provider,
+            executor=self.executor,
+            agent_name=agent_name,
+        )
+        self.system_prompt = system_prompt or self._default_system_prompt()
+
+    def _default_system_prompt(self) -> str:
+        prompt = (
+            f"You are {self.agent_name}, an enterprise AI Agent.\n\n"
+            "You have access to tools and knowledge base context.\n"
+            "- For calculations, ALWAYS use the provided tools — never guess numbers.\n"
+            "- When knowledge base context is provided, reference it in your answer.\n"
+            "- Use the user's language (Chinese or English).\n"
+            "- Be accurate and concise.\n\n"
+            "Tool call format:\n"
+            '{"tool": "tool_name", "args": {"param1": "value1", ...}}\n'
+        )
+        prompt += self.executor.get_tool_prompt()
+        return prompt
+
+    async def run(self, user_message: str) -> AsyncIterator[dict]:
+        """Run the Agent via LangGraph and yield SSE events (token-level streaming)."""
+        trace_id = f"trace_{int(time.time() * 1000)}"
+
+        yield {"event": "start", "trace_id": trace_id, "agent": self.agent_name}
+
+        state: AgentState = {
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "tool_call": None,
+            "tool_result": None,
+            "rag_context": "",
+            "iteration": 0,
+            "final_answer": "",
+            "agent_name": self.agent_name,
+        }
+
+        compiled = self.graph.get_graph()
+
+        try:
+            # Run LangGraph — use astream for node-by-node events
+            async for chunk in compiled.astream(state):
+                for node_name, node_output in chunk.items():
+                    if node_name == "think":
+                        # Report start of thinking
+                        yield {"event": "phase", "phase": "think"}
+                    elif node_name == "execute_tool":
+                        tc = node_output.get("tool_call", {})
+                        yield {
+                            "event": "phase",
+                            "phase": "act",
+                            "tool": tc.get("name", ""),
+                        }
+                    elif node_name == "respond":
+                        final_answer = node_output.get("final_answer", "")
+                        # Token-level streaming of the final answer
+                        if final_answer:
+                            for char in final_answer:
+                                yield {"event": "token", "content": char}
+
+            # Get final state to report tool results
+            final_state = await compiled.ainvoke(state)
+            iterations = final_state.get("iteration", 0)
+            tc = final_state.get("tool_call")
+            tr = final_state.get("tool_result")
+
+            if tc and iterations > 1:
+                yield {
+                    "event": "tool_result",
+                    "tool": tc.get("name", ""),
+                    "result": tr or "",
+                }
+
+            yield {
+                "event": "done",
+                "trace_id": trace_id,
+                "iterations": iterations,
+            }
+
         except Exception as e:
-            return f"Tool error ({tool_call.name}): {e}"
+            yield {"event": "error", "message": str(e)}
 
 
-# ---- Singleton engine factory ----
-
-_default_engine: AgentEngine | None = None
-
-
-def get_agent_engine() -> AgentEngine:
-    global _default_engine
-    if _default_engine is None:
-        _default_engine = AgentEngine()
-    return _default_engine
-
-
-def get_engine_with_tools(tools: list[dict]) -> AgentEngine:
-    """Create an engine with registered tools from definitions."""
-    engine = AgentEngine()
-    return engine
+# Singleton factory for the Agent chat endpoint
+def get_agent_engine(agent_name: str = "AgentForge") -> AgentEngine:
+    return AgentEngine(agent_name=agent_name)

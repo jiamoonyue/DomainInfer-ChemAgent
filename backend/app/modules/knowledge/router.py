@@ -26,6 +26,11 @@ class NamespaceInfo(BaseModel):
     model_config = {"from_attributes": True}
 
 
+@router.get("/ping")
+async def knowledge_ping():
+    return {"module": "knowledge", "status": "active"}
+
+
 @router.get("/namespaces", response_model=list[str])
 async def list_namespaces():
     """List available knowledge namespaces (directories under knowledge/)."""
@@ -38,19 +43,12 @@ async def list_namespaces():
 
 
 @router.get("/{namespace}", response_model=NamespaceInfo)
-async def namespace_info(namespace: str, db: GetDB):
-    """Get document/chunk counts for a namespace."""
-    doc_count = await db.scalar(
-        select(func.count(Document.id)).where(
-            Document.namespace == namespace, Document.status == "active"
-        )
-    )
-    chunk_count = await db.scalar(
-        select(func.count(Chunk.id)).join(Document).where(
-            Document.namespace == namespace, Chunk.status == "active"
-        )
-    )
-    return NamespaceInfo(namespace=namespace, document_count=doc_count or 0, chunk_count=chunk_count or 0)
+async def namespace_info(namespace: str):
+    """Get document count for a namespace (filesystem-based, no DB)."""
+    ns_dir = KNOWLEDGE_DIR / namespace
+    files = list(ns_dir.rglob("*")) if ns_dir.exists() else []
+    doc_count = sum(1 for f in files if f.is_file() and f.suffix in ('.md', '.txt'))
+    return NamespaceInfo(namespace=namespace, document_count=doc_count, chunk_count=0)
 
 
 @router.post("/{namespace}/upload")
@@ -139,8 +137,3 @@ async def delete_document(namespace: str, doc_id: str, db: GetDB):
     )
     await db.flush()
     await db.commit()
-
-
-@router.get("/ping")
-async def knowledge_ping():
-    return {"module": "knowledge", "status": "active"}

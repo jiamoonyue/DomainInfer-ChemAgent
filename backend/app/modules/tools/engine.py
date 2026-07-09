@@ -43,7 +43,7 @@ def _parse_formula(formula: str) -> list[tuple[str, int]]:
         formula = re.sub(
             r"\(([^()]+)\)(\d*)",
             lambda m: "".join(
-                e + str(int(c) * (int(m.group(2)) if m.group(2) else 1))
+                e + str((int(c) if c else 1) * (int(m.group(2)) if m.group(2) else 1))
                 for e, c in re.findall(r"([A-Z][a-z]?)(\d*)", m.group(1))
             ),
             formula,
