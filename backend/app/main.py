@@ -6,9 +6,10 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings, PROJECT_ROOT
-from app.core.database import init_db
+from app.core.database import init_db, AsyncSessionLocal
 from app.core.exceptions import register_exception_handlers
 from app.core.redis import check_redis, close_redis
+from app.modules.auth.service import bootstrap_admin
 
 
 @asynccontextmanager
@@ -20,6 +21,9 @@ async def lifespan(app: FastAPI):
     try:
         await init_db()
         print("[AgentForge] Database tables verified")
+        # Bootstrap admin user if no users exist
+        async with AsyncSessionLocal() as sess:
+            await bootstrap_admin(sess)
     except Exception as e:
         print(f"[AgentForge] WARNING: Database not available yet: {e}")
 
@@ -88,9 +92,11 @@ async def status():
     }
 
 
-# ---- Module Routers (placeholder stubs for P0) ----
+# ---- Real Module Routers ----
 
-auth_router = APIRouter(prefix="/auth", tags=["Auth"])
+from app.modules.auth.router import router as auth_router
+
+# Placeholders (replaced in P2/P3)
 agents_router = APIRouter(prefix="/agents", tags=["Agents"])
 rag_router = APIRouter(prefix="/rag", tags=["RAG"])
 tools_router = APIRouter(prefix="/tools", tags=["Tools"])
@@ -98,43 +104,33 @@ knowledge_router = APIRouter(prefix="/knowledge", tags=["Knowledge"])
 conversations_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 observability_router = APIRouter(prefix="/observability", tags=["Observability"])
 
+app.include_router(auth_router, prefix="/api")
 
-@auth_router.get("/ping")
-async def auth_ping():
-    return {"module": "auth", "status": "pending"}
-
-
+# Placeholder pings for incomplete modules
 @agents_router.get("/ping")
 async def agents_ping():
     return {"module": "agents", "status": "pending"}
-
 
 @rag_router.get("/ping")
 async def rag_ping():
     return {"module": "rag", "status": "pending"}
 
-
 @tools_router.get("/ping")
 async def tools_ping():
     return {"module": "tools", "status": "pending"}
-
 
 @knowledge_router.get("/ping")
 async def knowledge_ping():
     return {"module": "knowledge", "status": "pending"}
 
-
 @conversations_router.get("/ping")
 async def conversations_ping():
     return {"module": "conversations", "status": "pending"}
-
 
 @observability_router.get("/ping")
 async def observability_ping():
     return {"module": "observability", "status": "pending"}
 
-
-app.include_router(auth_router, prefix="/api")
 app.include_router(agents_router, prefix="/api")
 app.include_router(rag_router, prefix="/api")
 app.include_router(tools_router, prefix="/api")
