@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment
+.env
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.postgres_data/
+.redis_data/
+
+# Data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# ChromaDB
+chroma_v2/
+chroma_data/
+
+# Models
+models/
+
+# Logs
+*.log
+logs/
+
+# Node (frontend)
+node_modules/
+frontend/dist/
+frontend/.next/
