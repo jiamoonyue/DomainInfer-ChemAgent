@@ -96,22 +96,21 @@ async def status():
 
 from app.modules.auth.router import router as auth_router
 from app.modules.agents.router import router as agents_router
+from app.modules.rag.router import router as rag_router
+from app.modules.conversations.router import router as conversations_router
+from app.modules.observability.router import router as observability_router
 
 # Placeholders (replaced in P2/P3)
-rag_router = APIRouter(prefix="/rag", tags=["RAG"])
 tools_router = APIRouter(prefix="/tools", tags=["Tools"])
 knowledge_router = APIRouter(prefix="/knowledge", tags=["Knowledge"])
-conversations_router = APIRouter(prefix="/conversations", tags=["Conversations"])
-observability_router = APIRouter(prefix="/observability", tags=["Observability"])
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(agents_router, prefix="/api")
+app.include_router(rag_router, prefix="/api")
+app.include_router(conversations_router, prefix="/api")
+app.include_router(observability_router, prefix="/api")
 
 # Placeholder pings for incomplete modules
-@rag_router.get("/ping")
-async def rag_ping():
-    return {"module": "rag", "status": "pending"}
-
 @tools_router.get("/ping")
 async def tools_ping():
     return {"module": "tools", "status": "pending"}
@@ -120,16 +119,5 @@ async def tools_ping():
 async def knowledge_ping():
     return {"module": "knowledge", "status": "pending"}
 
-@conversations_router.get("/ping")
-async def conversations_ping():
-    return {"module": "conversations", "status": "pending"}
-
-@observability_router.get("/ping")
-async def observability_ping():
-    return {"module": "observability", "status": "pending"}
-
-app.include_router(rag_router, prefix="/api")
 app.include_router(tools_router, prefix="/api")
 app.include_router(knowledge_router, prefix="/api")
-app.include_router(conversations_router, prefix="/api")
-app.include_router(observability_router, prefix="/api")
