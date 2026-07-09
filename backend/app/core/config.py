@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     DEEPSEEK_MODEL: str = "deepseek-chat"
     USE_API: bool = True
 
+    # ---- Local Fallback Model (Ollama) ----
+    LOCAL_MODEL_NAME: str = "qwen3:8b"
+
     # ---- Auth ----
     SECRET_KEY: str = "change-me-to-a-random-secret-at-least-32-chars"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15

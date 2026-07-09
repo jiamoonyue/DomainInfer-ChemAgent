@@ -36,6 +36,22 @@ class LiteLLMProvider(BaseLLMProvider):
     def provider_name(self) -> str:
         return f"litellm({self._model})"
 
+    def _get_api_kwargs(self) -> dict:
+        """Return per-model api_base/api_key kwargs.
+
+        Ollama uses the local endpoint with no key; others use the
+        configured DeepSeek credentials as a fallback default.
+        """
+        kwargs: dict = {}
+        if self._model.startswith("ollama/"):
+            # Ollama is local — no API key needed
+            pass
+        elif settings.DEEPSEEK_API_KEY:
+            kwargs["api_key"] = settings.DEEPSEEK_API_KEY
+        if self._model.startswith("deepseek/"):
+            kwargs["api_base"] = settings.DEEPSEEK_API_BASE
+        return kwargs
+
     async def chat(
         self,
         messages: list[dict],
@@ -48,7 +64,7 @@ class LiteLLMProvider(BaseLLMProvider):
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            api_key=settings.DEEPSEEK_API_KEY,
+            **self._get_api_kwargs(),
         )
         choice = response.choices[0]
         usage = response.usage
@@ -74,7 +90,7 @@ class LiteLLMProvider(BaseLLMProvider):
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
-            api_key=settings.DEEPSEEK_API_KEY,
+            **self._get_api_kwargs(),
         )
         async for chunk in response:
             delta = chunk.choices[0].delta

@@ -123,18 +123,22 @@ async def _build_rag_context(query: str, namespace: str = "chem") -> str:
 def _build_provider(model_str: str | None = None) -> BaseLLMProvider:
     """Build the LLM provider with circuit breaker fallback.
 
+    双重策略: API 失败 → 自动切换本地模型 (Ollama)
+
     设计文档 5.2:
-      self.primary = LiteLLM(model="gpt-4o-mini")
-      self.fallback1 = LiteLLM(model="claude-haiku")
-      self.fallback2 = LiteLLM(model="ollama/qwen3")
+      self.primary = LiteLLM(model="deepseek/deepseek-chat")  # 主模型(API)
+      self.fallback1 = LiteLLM(model="ollama/qwen3:8b")       # 备选(本地,零成本)
     """
     primary = LiteLLMProvider(model=model_str or f"deepseek/{settings.DEEPSEEK_MODEL}")
 
-    # Build fallback chain. Currently single-provider since we use DeepSeek.
-    # When multiple API keys are configured, add fallback providers.
-    fallback_providers: list[BaseLLMProvider] = [primary]
+    # Ollama local model as the actual fallback — no API key needed, zero cost
+    ollama_fallback = LiteLLMProvider(model=f"ollama/{settings.LOCAL_MODEL_NAME}")
 
-    return CircuitBreakerProvider(providers=fallback_providers)
+    return CircuitBreakerProvider(
+        providers=[primary, ollama_fallback],
+        failure_threshold=2,      # API 失败 2 次后熔断
+        cooldown_seconds=30.0,    # 30 秒后重试 API
+    )
 
 
 # ============================================================
