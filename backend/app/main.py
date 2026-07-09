@@ -95,9 +95,9 @@ async def status():
 # ---- Real Module Routers ----
 
 from app.modules.auth.router import router as auth_router
+from app.modules.agents.router import router as agents_router
 
 # Placeholders (replaced in P2/P3)
-agents_router = APIRouter(prefix="/agents", tags=["Agents"])
 rag_router = APIRouter(prefix="/rag", tags=["RAG"])
 tools_router = APIRouter(prefix="/tools", tags=["Tools"])
 knowledge_router = APIRouter(prefix="/knowledge", tags=["Knowledge"])
@@ -105,12 +105,9 @@ conversations_router = APIRouter(prefix="/conversations", tags=["Conversations"]
 observability_router = APIRouter(prefix="/observability", tags=["Observability"])
 
 app.include_router(auth_router, prefix="/api")
+app.include_router(agents_router, prefix="/api")
 
 # Placeholder pings for incomplete modules
-@agents_router.get("/ping")
-async def agents_ping():
-    return {"module": "agents", "status": "pending"}
-
 @rag_router.get("/ping")
 async def rag_ping():
     return {"module": "rag", "status": "pending"}
@@ -131,7 +128,6 @@ async def conversations_ping():
 async def observability_ping():
     return {"module": "observability", "status": "pending"}
 
-app.include_router(agents_router, prefix="/api")
 app.include_router(rag_router, prefix="/api")
 app.include_router(tools_router, prefix="/api")
 app.include_router(knowledge_router, prefix="/api")
